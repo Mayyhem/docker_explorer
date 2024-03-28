@@ -9,11 +9,11 @@ from requests import request
 from utils.Log import getLogger
 LOG = getLogger(__name__)
 
-def scan_image(tagged_image:str, tmp_path:str, whispers_config:str, whispers_output:str, whispers_timeout:int):
+def scan_image(tagged_image:str, tmp_path:str, whispers_config:str, whispers_output:str, whispers_timeout:int, completedtagsfile:str):
     LOG.debug(f"Image: {tagged_image}")
     container_name= "explore_"+tagged_image.replace("/", "_").replace(":", "-")
-
     container_exists = False
+
     try:
         client = docker.from_env()
 
@@ -24,18 +24,19 @@ def scan_image(tagged_image:str, tmp_path:str, whispers_config:str, whispers_out
                 container_exists = True
                 LOG.debug(f"Container with the name {container_name} already exists. Skipping.")
                 break
+
         if not container_exists:
             LOG.debug(f"Pull image: {tagged_image}")
             image= client.images.pull(f"{tagged_image}")
             
-            LOG.debug(f"Create container: {tagged_image}")
+            LOG.debug(f"Create container: {container_name}")
             container= client.containers.create(image=f"{tagged_image}", command="fake_command", name=container_name)
 
             LOG.debug(f"Export fs: {tagged_image}")
             tmp_dump= os.path.join(tmp_path, container_name)
             export = subprocess.run(f"docker export {container_name} -o {tmp_dump}.tar", shell=True, stdout=subprocess.PIPE, text=True)
 
-            LOG.debug(f"Remove container: {tagged_image}")
+            LOG.debug(f"Remove container: {container_name}")
             container.remove()
 
             LOG.debug(f"Untar: {tagged_image}")
@@ -72,9 +73,18 @@ def scan_image(tagged_image:str, tmp_path:str, whispers_config:str, whispers_out
                 f.write(whispers.stdout)
                 f.close
 
+            # Remove the output directory if it's empty
+            else:
+                mkdir = subprocess.run(f"rm -rf {output_dir}", shell=True, stdout=subprocess.PIPE, text=True, check=True)
+
             mkdir = subprocess.run(f"rm -rf {tmp_dump}", shell=True, stdout=subprocess.PIPE, text=True, check=True)
             mkdir = subprocess.run(f"rm {tmp_dump}.tar", shell=True, stdout=subprocess.PIPE, text=True, check=True)
             client.images.remove(f"{tagged_image}")
+
+            # Track progress
+            with open(completedtagsfile, 'a') as f:        
+                f.write(tagged_image + "\n")
+
             return
 
     except Exception as e:
