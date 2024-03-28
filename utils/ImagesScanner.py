@@ -9,71 +9,77 @@ from requests import request
 from utils.Log import getLogger
 LOG = getLogger(__name__)
 
-def scan_image(image_name:str, tmp_path:str, whispers_config:str, whispers_output:str, whispers_timeout:int):
-    LOG.debug(f"Image: {image_name}")
-    container_name= "explore_"+image_name.replace("/", "_")
+def scan_image(tagged_image:str, tmp_path:str, whispers_config:str, whispers_output:str, whispers_timeout:int):
+    LOG.debug(f"Image: {tagged_image}")
+    container_name= "explore_"+tagged_image.replace("/", "_").replace(":", "-")
 
-    latest_version= get_image_latest_version(image_name)
-
+    container_exists = False
     try:
         client = docker.from_env()
 
-        LOG.debug(f"Pull image: {image_name}:{latest_version}")
-        image= client.images.pull(f"{image_name}:{latest_version}")
-        
-        LOG.debug(f"Create container: {image_name}")
-        container= client.containers.create(image=f"{image_name}:{latest_version}", command="fake_command", name=container_name)
+        # Check if container with the same name already exists
+        existing_containers = client.containers.list(all=True)
+        for container in existing_containers:
+            if container.name == container_name:
+                container_exists = True
+                LOG.debug(f"Container with the name {container_name} already exists. Skipping.")
+                break
+        if not container_exists:
+            LOG.debug(f"Pull image: {tagged_image}")
+            image= client.images.pull(f"{tagged_image}")
+            
+            LOG.debug(f"Create container: {tagged_image}")
+            container= client.containers.create(image=f"{tagged_image}", command="fake_command", name=container_name)
 
-        LOG.debug(f"Export fs: {image_name}")
-        tmp_dump= os.path.join(tmp_path, container_name)
-        export = subprocess.run(f"docker export {container_name} -o {tmp_dump}.tar", shell=True, stdout=subprocess.PIPE, text=True)
+            LOG.debug(f"Export fs: {tagged_image}")
+            tmp_dump= os.path.join(tmp_path, container_name)
+            export = subprocess.run(f"docker export {container_name} -o {tmp_dump}.tar", shell=True, stdout=subprocess.PIPE, text=True)
 
-        LOG.debug(f"Remove container: {image_name}")
-        container.remove()
+            LOG.debug(f"Remove container: {tagged_image}")
+            container.remove()
 
-        LOG.debug(f"Untar: {image_name}")
-        mkdir = subprocess.run(f"mkdir {tmp_dump}", shell=True, stdout=subprocess.PIPE, text=True, check=True)
-        untar = subprocess.run(f"tar -xf {tmp_dump}.tar -C {tmp_dump}", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            LOG.debug(f"Untar: {tagged_image}")
+            mkdir = subprocess.run(f"mkdir {tmp_dump}", shell=True, stdout=subprocess.PIPE, text=True, check=True)
+            untar = subprocess.run(f"tar -xf {tmp_dump}.tar -C {tmp_dump}", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+            LOG.debug(f"Whispers: {tagged_image}")
+            start = time.time()
+            try:
+                output_dir= os.path.join(whispers_output, container_name)
+                if platform == "linux" or platform == "linux2":
+                    # In linux it can be used the shell command `timeout` to limit Whispers execution
+                    if whispers_config:
+                        whispers = subprocess.run(f"timeout {whispers_timeout} whispers -d {output_dir} -c {whispers_config} {tmp_dump}", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                    else:
+                        whispers = subprocess.run(f"timeout {whispers_timeout} whispers -d {output_dir} {tmp_dump}", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                else:
+                    if whispers_config:
+                        whispers = subprocess.run(f"whispers -d {output_dir} -c {whispers_config} {tmp_dump}", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                    else:
+                        whispers = subprocess.run(f"whispers -d {output_dir} {tmp_dump}", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+            except subprocess.TimeoutExpired as e:
+                LOG.debug(f"Timeout: {tagged_image}")
+            
+            elapsed = (time.time() - start)
+            LOG.debug(f"Whispers {tagged_image} execution took {elapsed/60} minutes")
+
+            if len(whispers.stderr)>0:
+                LOG.debug(f"Whispers {tagged_image} error: {whispers.stderr}")
+            
+            if len(whispers.stdout)>0:
+                f = open(f"./{container_name}.log", "w")
+                f.write(whispers.stdout)
+                f.close
+
+            mkdir = subprocess.run(f"rm -rf {tmp_dump}", shell=True, stdout=subprocess.PIPE, text=True, check=True)
+            mkdir = subprocess.run(f"rm {tmp_dump}.tar", shell=True, stdout=subprocess.PIPE, text=True, check=True)
+            client.images.remove(f"{tagged_image}")
+            return
 
     except Exception as e:
-        LOG.debug(f"Error with image: {image_name}: {e}", exc_info=True)
+        LOG.debug(f"Error with image: {tagged_image}: {e}", exc_info=True)
         exit(0)
-        
-    LOG.debug(f"Whispers: {image_name}")
-    start = time.time()
-    try:
-        output_dir= os.path.join(whispers_output, container_name)
-
-        if platform == "linux" or platform == "linux2":
-            # In linux it can be used the shell command `timeout` to limit Whispers execution
-            if whispers_config:
-                whispers = subprocess.run(f"timeout {whispers_timeout} whispers -d {output_dir} -c {whispers_config} {tmp_dump}", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            else:
-                whispers = subprocess.run(f"timeout {whispers_timeout} whispers -d {output_dir} {tmp_dump}", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        else:
-            if whispers_config:
-                whispers = subprocess.run(f"whispers -d {output_dir} -c {whispers_config} {tmp_dump}", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            else:
-                whispers = subprocess.run(f"whispers -d {output_dir} {tmp_dump}", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-
-    except subprocess.TimeoutExpired as e:
-        LOG.debug(f"Timeout: {image_name}")
-    
-    elapsed = (time.time() - start)
-    LOG.debug(f"Whispers {image_name} execution took {elapsed/60} minutes")
-
-    if len(whispers.stderr)>0:
-        LOG.debug(f"Whispers {image_name} error: {whispers.stderr}")
-    
-    if len(whispers.stdout)>0:
-        f = open(f"./{container_name}.log", "w")
-        f.write(whispers.stdout)
-        f.close
-
-    mkdir = subprocess.run(f"rm -rf {tmp_dump}", shell=True, stdout=subprocess.PIPE, text=True, check=True)
-    mkdir = subprocess.run(f"rm {tmp_dump}.tar", shell=True, stdout=subprocess.PIPE, text=True, check=True)
-    client.images.remove(f"{image_name}:{latest_version}")
-    return
 
 def get_image_latest_version(image:str):
     url = f"https://hub.docker.com:443/v2/repositories/{image}/tags/?page_size=25&page=1"
