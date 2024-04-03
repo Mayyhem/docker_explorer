@@ -73,22 +73,23 @@ def scan_image(tagged_image:str, tmp_path:str, whispers_config:str, whispers_out
                 f.write(whispers.stdout)
                 f.close
 
-            # Remove the output directory if it's empty
-            else:
-                mkdir = subprocess.run(f"rm -rf {output_dir}", shell=True, stdout=subprocess.PIPE, text=True, check=True)
-
-            mkdir = subprocess.run(f"rm -rf {tmp_dump}", shell=True, stdout=subprocess.PIPE, text=True, check=True)
-            mkdir = subprocess.run(f"rm {tmp_dump}.tar", shell=True, stdout=subprocess.PIPE, text=True, check=True)
-            client.images.remove(f"{tagged_image}")
-
             # Track progress
             with open(completedtagsfile, 'a') as f:        
                 f.write(tagged_image + "\n")
+
+                mkdir = subprocess.run(f"rm -rf {tmp_dump}", shell=True, stdout=subprocess.PIPE, text=True, check=True)
+                mkdir = subprocess.run(f"rm {tmp_dump}.tar", shell=True, stdout=subprocess.PIPE, text=True, check=True)
+                client.images.remove(f"{tagged_image}")
 
             return
 
     except Exception as e:
         LOG.debug(f"Error with image: {tagged_image}: {e}", exc_info=True)
+        with open("./error-images.txt", 'a') as f:        
+            f.write(tagged_image + "\n")
+        mkdir = subprocess.run(f"rm -rf {tmp_dump}", shell=True, stdout=subprocess.PIPE, text=True, check=True)
+        mkdir = subprocess.run(f"rm {tmp_dump}.tar", shell=True, stdout=subprocess.PIPE, text=True, check=True)
+        client.images.remove(f"{tagged_image}")
         exit(0)
 
 def get_image_latest_version(image:str):
